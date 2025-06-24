@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Union, Annotated, Sequence
+from typing import TypedDict, List, Union, Annotated, Sequence, Optional
 from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')  # Explicitly set the backend before importing pyplot
 import matplotlib.pyplot as plt
-
+import re
 import seaborn as sns
 import os
 import requests
@@ -63,91 +63,88 @@ def calculate_statistics(df, col_name: Union[str, list[str]], group_by: Union[No
     return stats
 
 @tool
-def generate_plot(df, x_column: str, y_column: Union[str, list[str]], plot: str, group_by: Union[None, str, list[str]] = None, title: Union[None, str] = None):
+def generate_plot(
+    df: dict,
+    x_column: str,
+    y_column: str,
+    plot: str,
+    title: str,
+    group_by: Optional[str] = None
+) -> str:
     """This function plots the data using pandas .plot() function and columns provided as parameters using the plot type deemed most logical for the scenarios by the LLM"""
-    if not isinstance(df, pd.DataFrame):
+    try:
         df = pd.DataFrame(df)
 
-    if x_column not in df.columns:
-        return f"❌ x_column '{x_column}' not found in the dataset."
+        # Validate x_column
+        if x_column not in df.columns:
+            return f"❌ x_column '{x_column}' not found in the dataset."
 
-    if isinstance(y_column, str):
-        if y_column not in df.columns:
-            return f"❌ y_column '{y_column}' not found in the dataset."
-    elif isinstance(y_column, list):
-        invalid_cols = [col for col in y_column if col not in df.columns]
-        if invalid_cols:
-            return f"❌ y_column(s) {invalid_cols} not found in the dataset."
-    else:
-        return "❌ y_column must be a string or list of strings."
-    
-    plot = plot.lower().strip()
-    plot_type_mapping = {
-        # Line plot
-        "line": "lineplot",
-        "lineplot": "lineplot",
-        "linplot": "lineplot",
-        "lin": "lineplot",
-
-        # Bar plot
-        "bar": "barplot",
-        "barplot": "barplot",
-        "barchart": "barplot",
-
-        # Scatter plot
-        "scatter": "scatterplot",
-        "scatterplot": "scatterplot",
-
-        # Histogram
-        "hist": "histplot",
-        "histogram": "histplot",
-        "histo": "histplot",
-
-        # Box plot
-        "box": "boxplot",
-        "boxplot": "boxplot",
-        "boxchart": "boxplot",
-
-        # # Heatmap
-        # "heatmap": "heatmap",
-        # "correlation matrix": "heatmap"
-    }
-
-    func_map = {
-        'lineplot': lambda: sns.lineplot(data=df, x=x_column, y=y_column),
-        'barplot': lambda: sns.barplot(data=df, x=x_column, y=y_column, estimator="mean"),
-        'scatterplot': lambda: sns.scatterplot(data=df, x=x_column, y=y_column),
-        'boxplot': lambda: sns.boxplot(data=df, x=x_column, y=y_column),
-        'histplot': lambda: sns.histplot(data=df, x=x_column, bins=10, kde=True)
-    }
-
-    if plot not in plot_type_mapping:
-        return 'The required plot is not supported yet!'
-    
-    plot = plot_type_mapping[plot]
-
-    if group_by:
-        if plot == 'scatterplot':
-            sns.scatterplot(data=df, x=x_column, y=y_column, hue=group_by)
-            plt.title(title)
-            plt.show()
-            # plt.savefig(f'{title}.png')
-            return
-        elif plot == 'lineplot':
-            sns.lineplot(data=df, x=x_column, y=y_column, hue=group_by)
-            plt.title(title)
-            plt.show()
-            # plt.savefig(f'{title}.png')
-            return
+        # Validate y_column
+        if isinstance(y_column, str):
+            if y_column not in df.columns:
+                return f"❌ y_column '{y_column}' not found in the dataset."
+        elif isinstance(y_column, list):
+            invalid_cols = [col for col in y_column if col not in df.columns]
+            if invalid_cols:
+                return f"❌ y_column(s) {invalid_cols} not found in the dataset."
         else:
-            return 'Required Plot not supported with grouping!'
+            return "❌ y_column must be a string or list of strings."
 
-    
-    func_map[plot]()
-    plt.title(title)
-    plt.show()
-    # plt.savefig(f'{title}.png')
-    return
+        # Normalize plot type
+        plot_type_mapping = {
+            "line": "lineplot", "lineplot": "lineplot", "linplot": "lineplot", "lin": "lineplot",
+            "bar": "barplot", "barplot": "barplot", "barchart": "barplot",
+            "scatter": "scatterplot", "scatterplot": "scatterplot",
+            "hist": "histplot", "histogram": "histplot", "histo": "histplot",
+            "box": "boxplot", "boxplot": "boxplot", "boxchart": "boxplot",
+        }
+
+        plot = plot.lower().strip()
+        if plot not in plot_type_mapping:
+            return "❌ The required plot type is not supported yet."
+
+        plot_func = plot_type_mapping[plot]
+
+        # Group-by limitations
+        unsupported_grouped_plots = ["barplot", "scatterplot", "histplot", "boxplot"]
+        if group_by and plot_func in unsupported_grouped_plots:
+            return f"⚠️ The plot type '{plot_func}' is not supported with 'group_by'. Please remove grouping or use a line plot."
+
+        # Start plotting
+        plt.figure(figsize=(8, 5))
+
+        if not group_by:
+            if plot_func == "barplot":
+                sns.barplot(x=x_column, y=y_column, data=df)
+            elif plot_func == "lineplot":
+                sns.lineplot(x=x_column, y=y_column, data=df)
+            elif plot_func == "scatterplot":
+                sns.scatterplot(x=x_column, y=y_column, data=df)
+            elif plot_func == "histplot":
+                sns.histplot(data=df[y_column])
+            elif plot_func == "boxplot":
+                sns.boxplot(x=x_column, y=y_column, data=df)
+            else:
+                return f"❌ Plot type '{plot_func}' is not implemented yet."
+        else:
+            if plot_func == "lineplot":
+                sns.lineplot(x=x_column, y=y_column, hue=group_by, data=df)
+            else:
+                return f"⚠️ Grouped plotting for '{plot_func}' is not yet supported."
+
+        plt.title(title)
+        plt.xticks(rotation=30)
+        plt.tight_layout()
+
+        # Sanitize filename
+        filename_safe = re.sub(r'[^a-zA-Z0-9_]', '_', title.strip().lower()) + '.png'
+        full_path = f'folder_path/{title}.png'
+        plt.savefig(full_path)
+        plt.close()
+        return f"✅ Plot titled '{filename_safe}' saved to: {full_path}"
+    except Exception as e:
+        return f"❌ Plot generation failed: {str(e)}"
+
 
 tools = [calculate_statistics, generate_plot]
 
@@ -155,20 +152,24 @@ llm = llm.bind_tools(tools)
 
 def model_call(state: AgentState) -> AgentState:
     system_prompt = SystemMessage(
-        content='''You are a Data Insights Agent that helps analyze tabular data (typically CSV or DataFrame).
-        You are equipped with two powerful tools:
-        1. `calculate_statistics`: Use this to compute summary statistics (mean, median, min, max, stddev), optionally grouped by one or more columns.
-        2. `generate_plot`: Use this to generate visualizations such as bar plots, line plots, scatter plots, histograms, and box plots.
-        📌 Your responsibilities:
-        - Decide which tool to use based on the user request.
-        - Always ask for required details: column names, groupings, or plot type if not clearly provided.
-        - Validate input where necessary (e.g., ensure column names exist in the dataset).
-        - Never answer analytical questions directly — always use the tools provided.
-        - If the user asks for an insight or analysis (e.g., “Which region performs best?”), use `calculate_statistics` to compare values.
-        - If a task is required to be done for multiple columns/ rows you can run the tool multiple times for individual columns since the tool inputs sometimes require individual columns
-        ❌ Do not attempt to analyze without data or use knowledge beyond what's in the provided dataset.
-        ✅ If you're unsure what the user wants, politely ask clarifying questions.
-        You are focused, analytical, and precise — like a data analyst powered by Python tools.'''
+        content='''You are a Data Insights Agent designed to analyze tabular data, typically in the form of a CSV or DataFrame.
+
+        You have access to two tools:
+        1. `calculate_statistics`: Use this to compute summary statistics (mean, median, min, max, stddev), with optional grouping.
+        2. `generate_plot`: Use this to create visualizations like bar plots, line plots, scatter plots, histograms, and box plots.
+
+        📌 Guidelines for effective use:
+        - Select the most appropriate tool based on user intent, inferring details when not explicitly provided.
+        - Validate column names and types before tool usage. Politely ask clarifying questions only when absolutely necessary.
+        - You are allowed to make reasoned assumptions or attempt defaults (e.g., default groupings, sensible column selection) where appropriate.
+        - If the user asks for insights (e.g., “best region” or “top performer”), use `calculate_statistics` to guide your answer.
+        - You may run tools multiple times for multiple columns or comparative views.
+        - When a plot is requested without specific type or axis, choose a suitable visualization that fits the column types.
+        - Keep explanations clear, concise, and aligned with the dataset.
+
+        🚫 Do not attempt analysis without data or fabricate insights beyond the dataset.
+        ✅ You are precise, insightful, and proactive — like a skilled data analyst who speaks Python and thinks visually.
+        '''
     )
 
     # Add a preview of the dataset (first 5 rows only) as a SystemMessage
@@ -212,11 +213,13 @@ def print_stream(stream):
 
 def print_conversation(conversation):
     for msg in conversation["messages"]:
+        # if isinstance(msg, HumanMessage):
+        #     print(f"\n🧑 Human: {msg.content}")
         if isinstance(msg, AIMessage) and msg.content.strip():  # Only print non-empty AI responses
             print(f"\n🤖 AI: {msg.content}\n")
 
 user_input = input("🧑 Human: ")
-df = pd.read_csv(r'folder_path/retail_data.csv')
+df = pd.read_csv(r'retail_data.csv')
 
 while user_input != "exit":
     # response = app.invoke({"messages": [HumanMessage(content=user_input)], 'df': df})
